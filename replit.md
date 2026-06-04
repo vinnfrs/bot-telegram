@@ -1,44 +1,48 @@
-# [Project name]
+# Toko Aplikasi Premium — Telegram Bot
 
-_Replace the heading above with the project's name, and this line with one sentence describing what this app does for users._
+Bot Telegram untuk jualan aplikasi premium secara otomatis 24 jam, lengkap dengan alur pembelian, notifikasi pesanan ke admin, dan penerusan bukti pembayaran.
 
 ## Run & Operate
 
-- `pnpm --filter @workspace/api-server run dev` — run the API server (port 5000)
-- `pnpm run typecheck` — full typecheck across all packages
-- `pnpm run build` — typecheck + build all packages
-- `pnpm --filter @workspace/api-spec run codegen` — regenerate API hooks and Zod schemas from the OpenAPI spec
-- `pnpm --filter @workspace/db run push` — push DB schema changes (dev only)
-- Required env: `DATABASE_URL` — Postgres connection string
+- `pnpm --filter @workspace/api-server run dev` — jalankan server + bot Telegram (port 8080)
+- `pnpm run typecheck` — typecheck semua package
+- `pnpm run build` — typecheck + build semua package
+- Required env: `TELEGRAM_BOT_TOKEN`, `TELEGRAM_ADMIN_ID`
 
 ## Stack
 
 - pnpm workspaces, Node.js 24, TypeScript 5.9
 - API: Express 5
-- DB: PostgreSQL + Drizzle ORM
-- Validation: Zod (`zod/v4`), `drizzle-zod`
-- API codegen: Orval (from OpenAPI spec)
+- Bot: node-telegram-bot-api (polling mode)
+- DB: PostgreSQL + Drizzle ORM (tersedia, belum dipakai)
 - Build: esbuild (CJS bundle)
 
 ## Where things live
 
-_Populate as you build — short repo map plus pointers to the source-of-truth file for DB schema, API contracts, theme files, etc._
-
-## Architecture decisions
-
-_Populate as you build — non-obvious choices a reader couldn't infer from the code (3-5 bullets)._
+- `artifacts/api-server/src/bot/index.ts` — logika utama bot Telegram
+- `artifacts/api-server/src/bot/products.ts` — daftar produk & helper format harga
+- `artifacts/api-server/src/index.ts` — entry point server (import bot di sini)
 
 ## Product
 
-_Describe the high-level user-facing capabilities of this app once they exist._
+Bot Telegram aktif 24 jam untuk jualan aplikasi premium:
+- `/start` — sambutan + menu utama
+- `/produk` — tampil daftar produk dengan tombol beli
+- `/bantuan` — panduan cara pesan
+- Alur pembelian: pilih produk → konfirmasi → instruksi bayar → kirim bukti transfer
+- Notifikasi otomatis ke admin saat ada pesanan baru dan bukti transfer masuk
 
 ## User preferences
 
-_Populate as you build — explicit user instructions worth remembering across sessions._
+- Bahasa Indonesia untuk komunikasi
+- Bot harus aktif 24 jam tanpa henti
 
 ## Gotchas
 
-_Populate as you build — sharp edges, "always run X before Y" rules._
+- Bot menggunakan polling mode — harus selalu running agar menerima pesan
+- Untuk mengubah daftar produk, edit `artifacts/api-server/src/bot/products.ts` lalu restart server
+- Untuk mengubah info pembayaran, edit konstanta `PAYMENT_INFO` di `artifacts/api-server/src/bot/index.ts`
+- TELEGRAM_BOT_TOKEN dan TELEGRAM_ADMIN_ID wajib ada di Replit Secrets
 
 ## Pointers
 
