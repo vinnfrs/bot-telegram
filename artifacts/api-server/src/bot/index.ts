@@ -1,237 +1,625 @@
 import TelegramBot from "node-telegram-bot-api";
 import { logger } from "../lib/logger";
-import { products, formatPrice } from "./products";
+import { products, formatPrice, Product } from "./products";
 
 const TOKEN = process.env["TELEGRAM_BOT_TOKEN"];
 const ADMIN_ID = process.env["TELEGRAM_ADMIN_ID"];
 
-if (!TOKEN) {
-  throw new Error("TELEGRAM_BOT_TOKEN is required");
-}
-
-if (!ADMIN_ID) {
-  throw new Error("TELEGRAM_ADMIN_ID is required");
-}
+if (!TOKEN) throw new Error("TELEGRAM_BOT_TOKEN is required");
+if (!ADMIN_ID) throw new Error("TELEGRAM_ADMIN_ID is required");
 
 const bot = new TelegramBot(TOKEN, { polling: true });
 
-const PAYMENT_INFO = `
-🏦 *Metode Pembayaran:*
-• Transfer Bank BCA: 1234567890 (a/n Nama Kamu)
-• GoPay / OVO / Dana: 08123456789
-• QRIS: (kirim bukti transfer ke bot ini)
-`;
+const QRIS_FILE_ID = "AgACAgUAAxkBAAFLf15qIXBSF8mrV09qcFv0ZSxQM-CJmQACHBBrG47xCVXRQzRwiF7kjwEAAwIAA3MAAzsE";
 
-const userSessions: Record<number, { step: string; selectedProduct?: string }> = {};
+// ─── Session buyer ─────────────────────────────────────────
+const userSessions: Record<number, {
+  step: string;
+  selectedProduct?: string;
+  selectedDuration?: string;
+  buyerEmail?: string;
+}> = {};
 
-function getProductListText(): string {
-  let text = "🛒 *Daftar Produk Tersedia:*\n\n";
-  products.forEach((p, i) => {
-    text += `${i + 1}. *${p.name}*\n`;
-    text += `   📝 ${p.description}\n`;
-    text += `   💰 ${formatPrice(p.price)} / ${p.duration}\n\n`;
-  });
-  return text;
+// ─── Simpan data order (untuk admin kirim akun) ────────────
+// key = buyerId, value = info order terakhir
+const orderData: Record<number, {
+  buyerName: string;
+  productName: string;
+  durationLabel: string;
+  price: number;
+  buyerEmail?: string;
+}> = {};
+
+// ─── Kategori ──────────────────────────────────────────────
+const categories: { id: string; label: string; emoji: string }[] = [
+  { id: "streaming", label: "Streaming Apps", emoji: "🎬" },
+  { id: "music",     label: "Music Apps",     emoji: "🎵" },
+  { id: "editing",   label: "Editing Apps",   emoji: "🎨" },
+  { id: "tools",     label: "Tools",          emoji: "🔧" },
+];
+
+// ─── Keyboard Helpers ──────────────────────────────────────
+function getMainKeyboard() {
+  return {
+    inline_keyboard: [
+      [{ text: "🛍️ Lihat Produk",  callback_data: "show_products"  }],
+      [{ text: "📞 Hubungi Admin", callback_data: "contact_admin" }],
+    ],
+  };
 }
 
-function getProductKeyboard() {
-  const keyboard = products.map((p) => [
-    { text: `${p.name} — ${formatPrice(p.price)}`, callback_data: `buy_${p.id}` },
+function getCategoryKeyboard() {
+  const rows = [];
+  for (let i = 0; i < categories.length; i += 2) {
+    const row = categories.slice(i, i + 2).map((c) => ({
+      text: `${c.emoji} ${c.label}`,
+      callback_data: `cat_${c.id}`,
+    }));
+    rows.push(row);
+  }
+  rows.push([{ text: "🔙 Kembali", callback_data: "back_main" }]);
+  return { inline_keyboard: rows };
+}
+
+function getProductKeyboard(categoryId: string) {
+  const filtered = products.filter((p) => p.category === categoryId);
+  const keyboard = filtered.map((p) => [
+    { text: p.name, callback_data: `buy_${p.id}` },
   ]);
-  keyboard.push([{ text: "❌ Batal", callback_data: "cancel" }]);
+  keyboard.push([{ text: "🔙 Kembali ke Kategori", callback_data: "show_products" }]);
   return { inline_keyboard: keyboard };
 }
 
+function getDurationKeyboard(product: Product) {
+  const keyboard = product.durations.map((d) => [
+    {
+      text: `⏳ ${d.label} — ${formatPrice(d.price)}`,
+      callback_data: `dur_${d.id}`,
+    },
+  ]);
+  keyboard.push([{ text: "🔙 Kembali", callback_data: `cat_${product.category}` }]);
+  return { inline_keyboard: keyboard };
+}
+
+// Keyboard tombol di notif admin
+function getAdminActionKeyboard(buyerId: number) {
+  return {
+    inline_keyboard: [
+      [
+        { text: "✅ Kirim Akun",    callback_data: `send_account_${buyerId}` },
+        { text: "🧾 Kirim Invoice", callback_data: `send_invoice_${buyerId}` },
+      ],
+      [
+        { text: "💬 Buka Chat Buyer", url: `tg://user?id=${buyerId}` },
+      ],
+    ],
+  };
+}
+
+// ─── Helper: Edit bubble atau kirim baru ───────────────────
+async function editOrSend(
+  query: TelegramBot.CallbackQuery,
+  text: string,
+  keyboard: TelegramBot.InlineKeyboardMarkup
+) {
+  const chatId    = query.message!.chat.id;
+  const messageId = query.message!.message_id;
+  try {
+    await bot.editMessageText(text, {
+      chat_id:      chatId,
+      message_id:   messageId,
+      parse_mode:   "Markdown",
+      reply_markup: keyboard,
+    });
+  } catch {
+    await bot.sendMessage(chatId, text, {
+      parse_mode:   "Markdown",
+      reply_markup: keyboard,
+    });
+  }
+}
+
+// ─── Helper: Validasi email ────────────────────────────────
+function isValidEmail(email: string): boolean {
+  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email.trim());
+}
+
+// ─── Helper: Proses pembayaran ─────────────────────────────
+async function processPayment(
+  chatId: number,
+  productId: string,
+  durationId: string,
+  buyerName: string,
+  buyerId: number,
+  buyerEmail?: string
+) {
+  const product  = products.find((p) => p.id === productId);
+  const duration = product?.durations.find((d) => d.id === durationId);
+
+  if (!product || !duration) {
+    await bot.sendMessage(chatId, "❌ Pesanan tidak ditemukan.");
+    return;
+  }
+
+  userSessions[chatId] = {
+    step: "waiting_payment",
+    selectedProduct:  productId,
+    selectedDuration: durationId,
+    buyerEmail,
+  };
+
+  // Simpan data order untuk admin
+  orderData[buyerId] = {
+    buyerName,
+    productName:   product.name,
+    durationLabel: duration.label,
+    price:         duration.price,
+    buyerEmail,
+  };
+
+  const emailInfo = buyerEmail
+    ? `\n📧 Email kamu: *${buyerEmail}*\n_Admin akan invite ke email ini._\n`
+    : "";
+
+  await bot.sendMessage(
+    chatId,
+    `🏦 *Metode Pembayaran:*\n\n` +
+    `• Seabank: 901643865481 (a/n Kevin F.R)\n` +
+    `• GoPay / Dana / ShopeePay: 0895385164021\n` +
+    emailInfo,
+    { parse_mode: "Markdown" }
+  );
+
+  await bot.sendPhoto(chatId, QRIS_FILE_ID, {
+    caption:
+      `📱 *Scan QRIS ini untuk pembayaran*\n\n` +
+      `📸 Setelah transfer, kirim *screenshot bukti bayar* ke chat ini.\n\n` +
+      `_Pesanan diproses dalam 1x24 jam setelah pembayaran terkonfirmasi._`,
+    parse_mode: "Markdown",
+  });
+
+  // Notif ke admin + tombol aksi
+  const orderTime    = new Date().toLocaleString("id-ID", { timeZone: "Asia/Jakarta" });
+  const adminMessage =
+    `🔔 *PESANAN BARU!*\n\n` +
+    `👤 Nama: ${buyerName}\n` +
+    `🆔 User ID: \`${buyerId}\`\n` +
+    `📦 Produk: ${product.name}\n` +
+    `⏳ Durasi: ${duration.label}\n` +
+    `💰 Harga: ${formatPrice(duration.price)}\n` +
+    (buyerEmail ? `📧 Email: ${buyerEmail}\n` : "") +
+    `⏰ Waktu: ${orderTime}\n\n` +
+    `_Gunakan tombol di bawah untuk memproses pesanan ini._`;
+
+  try {
+    await bot.sendMessage(ADMIN_ID!, adminMessage, {
+      parse_mode:   "Markdown",
+      reply_markup: getAdminActionKeyboard(buyerId),
+    });
+    logger.info({ productId, durationId, buyerId }, "Order notification sent to admin");
+  } catch (err) {
+    logger.error({ err }, "Failed to send admin notification");
+  }
+}
+
+// ─── /start ────────────────────────────────────────────────
 bot.onText(/\/start/, async (msg) => {
   const chatId = msg.chat.id;
-  const name = msg.from?.first_name || "Kawan";
-
+  const name   = msg.from?.first_name || "Kawan";
   userSessions[chatId] = { step: "menu" };
 
   await bot.sendMessage(
     chatId,
     `👋 Halo *${name}*!\n\nSelamat datang di *Toko Aplikasi Premium* 🎉\n\nKami menyediakan berbagai aplikasi premium dengan harga terjangkau dan proses cepat!\n\nKetuk tombol di bawah untuk melihat produk kami:`,
-    {
-      parse_mode: "Markdown",
-      reply_markup: {
-        inline_keyboard: [
-          [{ text: "🛍️ Lihat Produk", callback_data: "show_products" }],
-          [{ text: "📞 Hubungi Admin", callback_data: "contact_admin" }],
-        ],
-      },
-    }
+    { parse_mode: "Markdown", reply_markup: getMainKeyboard() }
   );
 });
 
-bot.onText(/\/produk/, async (msg) => {
-  const chatId = msg.chat.id;
-  await bot.sendMessage(chatId, getProductListText(), {
-    parse_mode: "Markdown",
-    reply_markup: getProductKeyboard(),
-  });
-});
-
+// ─── /bantuan ──────────────────────────────────────────────
 bot.onText(/\/bantuan/, async (msg) => {
-  const chatId = msg.chat.id;
   await bot.sendMessage(
-    chatId,
-    `📚 *Cara Pemesanan:*\n\n1️⃣ Ketik /produk untuk melihat daftar produk\n2️⃣ Pilih produk yang kamu inginkan\n3️⃣ Konfirmasi pesanan\n4️⃣ Lakukan pembayaran sesuai instruksi\n5️⃣ Kirim bukti transfer\n6️⃣ Pesanan diproses oleh admin\n\n❓ Ada pertanyaan? Hubungi admin dengan /admin`,
+    msg.chat.id,
+    `📚 *Cara Pemesanan:*\n\n1️⃣ Ketik /start lalu pilih *Lihat Produk*\n2️⃣ Pilih kategori aplikasi\n3️⃣ Pilih produk yang kamu inginkan\n4️⃣ Pilih durasi langganan\n5️⃣ Konfirmasi pesanan\n6️⃣ Lakukan pembayaran\n7️⃣ Kirim bukti transfer\n8️⃣ Pesanan diproses oleh admin ✅\n\n❓ Pertanyaan? Hubungi admin dengan /admin`,
     { parse_mode: "Markdown" }
   );
 });
 
+// ─── /admin ────────────────────────────────────────────────
 bot.onText(/\/admin/, async (msg) => {
-  const chatId = msg.chat.id;
   await bot.sendMessage(
-    chatId,
-    `📞 *Hubungi Admin:*\n\nAdmin kami siap membantu kamu!\n👉 @username_admin\n\nJam operasional: 24 jam\n\n_Bot ini otomatis memproses pesanan dan mengirim notifikasi ke admin._`,
+    msg.chat.id,
+    `📞 *Hubungi Admin:*\n\nAdmin kami siap membantu kamu!\n👉 @username_admin\n\nJam operasional: 24 jam`,
     { parse_mode: "Markdown" }
   );
 });
 
+// ═══════════════════════════════════════════════════════════
+//  PERINTAH ADMIN
+// ═══════════════════════════════════════════════════════════
+
+// ─── /kirim <user_id> <isi pesan> ──────────────────────────
+// Contoh: /kirim 123456789 Email: abc@gmail.com | Pass: 12345
+bot.onText(/\/kirim (.+)/, async (msg, match) => {
+  if (String(msg.chat.id) !== ADMIN_ID) return; // hanya admin
+
+  const args    = match![1].split(" ");
+  const buyerId = parseInt(args[0]);
+  const isi     = args.slice(1).join(" ");
+
+  if (!buyerId || !isi) {
+    await bot.sendMessage(
+      msg.chat.id,
+      `❌ Format salah!\n\nGunakan:\n/kirim <user_id> <isi pesan>\n\nContoh:\n/kirim 123456789 Email: abc@gmail.com\nPass: 12345`
+    );
+    return;
+  }
+
+  try {
+    await bot.sendMessage(
+      buyerId,
+      `📦 *Pesanan Kamu Sudah Diproses!*\n\n${isi}\n\n_Terima kasih telah berbelanja di Vstorebot! 🎉_`,
+      { parse_mode: "Markdown" }
+    );
+    await bot.sendMessage(msg.chat.id, `✅ Pesan berhasil dikirim ke buyer (ID: ${buyerId})`);
+  } catch (err) {
+    await bot.sendMessage(msg.chat.id, `❌ Gagal kirim ke buyer. Pastikan user ID benar.`);
+    logger.error({ err }, "Failed to send message to buyer");
+  }
+});
+
+// ─── /invoice <user_id> <detail akun> ─────────────────────
+// Contoh: /invoice 123456789 Email: abc@gmail.com | Pass: 12345
+bot.onText(/\/invoice (.+)/, async (msg, match) => {
+  if (String(msg.chat.id) !== ADMIN_ID) return;
+
+  const args    = match![1].split(" ");
+  const buyerId = parseInt(args[0]);
+  const detail  = args.slice(1).join(" ");
+
+  if (!buyerId) {
+    await bot.sendMessage(msg.chat.id, `❌ Format salah!\n\nGunakan:\n/invoice <user_id> <detail akun>`);
+    return;
+  }
+
+  const order     = orderData[buyerId];
+  const orderTime = new Date().toLocaleString("id-ID", { timeZone: "Asia/Jakarta" });
+
+  const invoiceText =
+    `🧾 *INVOICE - Vstorebot*\n` +
+    `━━━━━━━━━━━━━━━━━━\n\n` +
+    `✅ *Pesanan Selesai Diproses!*\n\n` +
+    `👤 Nama: ${order?.buyerName || "Buyer"}\n` +
+    `📦 Produk: ${order?.productName || "-"}\n` +
+    `⏳ Durasi: ${order?.durationLabel || "-"}\n` +
+    `💰 Total: ${order ? formatPrice(order.price) : "-"}\n` +
+    `⏰ Tanggal: ${orderTime}\n\n` +
+    `━━━━━━━━━━━━━━━━━━\n` +
+    `📋 *Detail Akun:*\n${detail}\n\n` +
+    `━━━━━━━━━━━━━━━━━━\n` +
+    `_Simpan pesan ini sebagai bukti pembelian._\n` +
+    `_Terima kasih telah berbelanja! 🎉_`;
+
+  try {
+    await bot.sendMessage(buyerId, invoiceText, { parse_mode: "Markdown" });
+    await bot.sendMessage(msg.chat.id, `✅ Invoice berhasil dikirim ke buyer (ID: ${buyerId})`);
+  } catch (err) {
+    await bot.sendMessage(msg.chat.id, `❌ Gagal kirim invoice. Pastikan user ID benar.`);
+    logger.error({ err }, "Failed to send invoice to buyer");
+  }
+});
+
+// ─── /help_admin ───────────────────────────────────────────
+bot.onText(/\/help_admin/, async (msg) => {
+  if (String(msg.chat.id) !== ADMIN_ID) return;
+
+  await bot.sendMessage(
+    msg.chat.id,
+    `🛠️ *Perintah Admin:*\n\n` +
+    `*Kirim akun ke buyer:*\n` +
+    `/kirim <user_id> <isi pesan>\n` +
+    `_Contoh:_\n` +
+    `/kirim 123456789 Email: abc@gmail.com Pass: 12345\n\n` +
+    `*Kirim invoice ke buyer:*\n` +
+    `/invoice <user_id> <detail akun>\n` +
+    `_Contoh:_\n` +
+    `/invoice 123456789 Email: abc@gmail.com Pass: 12345\n\n` +
+    `💡 User ID buyer ada di notifikasi pesanan.`,
+    { parse_mode: "Markdown" }
+  );
+});
+
+// ═══════════════════════════════════════════════════════════
+//  CALLBACK QUERY
+// ═══════════════════════════════════════════════════════════
 bot.on("callback_query", async (query) => {
   if (!query.message || !query.from) return;
 
   const chatId = query.message.chat.id;
-  const data = query.data || "";
-  const name = query.from.first_name || "Pembeli";
+  const data   = query.data || "";
+  const name   = query.from.first_name || "Pembeli";
 
-  await bot.answerCallbackQuery(query.id);
+  try { await bot.answerCallbackQuery(query.id); } catch { /* query expired, abaikan */ }
 
-  if (data === "show_products") {
-    await bot.sendMessage(chatId, getProductListText(), {
-      parse_mode: "Markdown",
-      reply_markup: getProductKeyboard(),
-    });
-    return;
-  }
-
-  if (data === "contact_admin") {
+  // ── Admin: Kirim akun ke buyer (dari tombol notif)
+  if (data.startsWith("send_account_")) {
+    if (String(chatId) !== ADMIN_ID) return;
+    const buyerId = data.replace("send_account_", "");
     await bot.sendMessage(
       chatId,
-      `📞 *Hubungi Admin:*\n\nSilakan hubungi admin kami untuk pertanyaan lebih lanjut.\n\nJam operasional: 24 jam (bot otomatis)`,
+      `📤 *Kirim Akun ke Buyer*\n\n` +
+      `Gunakan perintah:\n` +
+      `/kirim ${buyerId} <isi akun>\n\n` +
+      `Contoh:\n` +
+      `/kirim ${buyerId} Email: abc@gmail.com\nPass: 12345`,
       { parse_mode: "Markdown" }
     );
     return;
   }
 
-  if (data === "cancel") {
-    userSessions[chatId] = { step: "menu" };
-    await bot.sendMessage(chatId, "❌ Pesanan dibatalkan. Ketik /start untuk kembali ke menu utama.", {
-      parse_mode: "Markdown",
-    });
+  // ── Admin: Kirim invoice ke buyer (dari tombol notif)
+  if (data.startsWith("send_invoice_")) {
+    if (String(chatId) !== ADMIN_ID) return;
+    const buyerId = data.replace("send_invoice_", "");
+    await bot.sendMessage(
+      chatId,
+      `🧾 *Kirim Invoice ke Buyer*\n\n` +
+      `Gunakan perintah:\n` +
+      `/invoice ${buyerId} <detail akun>\n\n` +
+      `Contoh:\n` +
+      `/invoice ${buyerId} Email: abc@gmail.com\nPass: 12345`,
+      { parse_mode: "Markdown" }
+    );
     return;
   }
 
+  // ── Kembali ke menu utama
+  if (data === "back_main") {
+    await editOrSend(query,
+      `🏠 *Menu Utama*\n\nKetuk tombol di bawah untuk melihat produk kami:`,
+      getMainKeyboard()
+    );
+    return;
+  }
+
+  // ── Tampilkan kategori
+  if (data === "show_products") {
+    await editOrSend(query,
+      `🛍️ *Pilih Kategori Produk:*\n\nSilakan pilih kategori yang kamu inginkan:`,
+      getCategoryKeyboard()
+    );
+    return;
+  }
+
+  // ── Hubungi admin
+  if (data === "contact_admin") {
+    await editOrSend(query,
+      `📞 *Hubungi Admin:*\n\nSilakan hubungi admin kami.\n👉 @username_admin\n\nJam operasional: 24 jam`,
+      { inline_keyboard: [[{ text: "🔙 Kembali", callback_data: "back_main" }]] }
+    );
+    return;
+  }
+
+  // ── Batal
+  if (data === "cancel") {
+    userSessions[chatId] = { step: "menu" };
+    await editOrSend(query,
+      `❌ *Pesanan dibatalkan.*\n\nKetuk tombol di bawah untuk kembali ke menu utama.`,
+      getMainKeyboard()
+    );
+    return;
+  }
+
+  // ── Pilih kategori
+  if (data.startsWith("cat_")) {
+    const catId    = data.replace("cat_", "");
+    const cat      = categories.find((c) => c.id === catId);
+    const filtered = products.filter((p) => p.category === catId);
+
+    if (filtered.length === 0) {
+      await editOrSend(query,
+        `⚠️ Belum ada produk di kategori ini.\n\nSilakan pilih kategori lain:`,
+        getCategoryKeyboard()
+      );
+      return;
+    }
+
+    await editOrSend(query,
+      `${cat?.emoji || "📦"} *${cat?.label || catId}*\n\nPilih produk yang kamu inginkan:`,
+      getProductKeyboard(catId)
+    );
+    return;
+  }
+
+  // ── Pilih produk → durasi
   if (data.startsWith("buy_")) {
     const productId = data.replace("buy_", "");
-    const product = products.find((p) => p.id === productId);
+    const product   = products.find((p) => p.id === productId);
 
     if (!product) {
       await bot.sendMessage(chatId, "❌ Produk tidak ditemukan.");
       return;
     }
 
-    userSessions[chatId] = { step: "confirm", selectedProduct: productId };
+    userSessions[chatId] = { step: "select_duration", selectedProduct: productId };
 
-    await bot.sendMessage(
-      chatId,
-      `🛒 *Detail Pesanan:*\n\n📦 Produk: *${product.name}*\n📝 Deskripsi: ${product.description}\n⏳ Durasi: ${product.duration}\n💰 Harga: *${formatPrice(product.price)}*\n\nApakah kamu yakin ingin membeli produk ini?`,
+    await editOrSend(query,
+      `📦 *${product.name}*\n📝 ${product.description}\n\n⏳ *Pilih durasi langganan:*`,
+      getDurationKeyboard(product)
+    );
+    return;
+  }
+
+  // ── Pilih durasi → konfirmasi
+  if (data.startsWith("dur_")) {
+    const durationId = data.replace("dur_", "");
+    const product    = products.find((p) => p.durations.some((d) => d.id === durationId));
+    const duration   = product?.durations.find((d) => d.id === durationId);
+
+    if (!product || !duration) {
+      await bot.sendMessage(chatId, "❌ Durasi tidak ditemukan.");
+      return;
+    }
+
+    userSessions[chatId] = {
+      step: "confirm",
+      selectedProduct:  product.id,
+      selectedDuration: durationId,
+    };
+
+    await editOrSend(query,
+      `🛒 *Detail Pesanan:*\n\n` +
+      `📦 Produk: *${product.name}*\n` +
+      `📝 ${product.description}\n` +
+      `⏳ Durasi: *${duration.label}*\n` +
+      `💰 Harga: *${formatPrice(duration.price)}*\n\n` +
+      `Apakah kamu yakin ingin membeli?`,
       {
-        parse_mode: "Markdown",
-        reply_markup: {
-          inline_keyboard: [
-            [
-              { text: "✅ Ya, Beli Sekarang", callback_data: `confirm_${productId}` },
-              { text: "❌ Batal", callback_data: "cancel" },
-            ],
-          ],
-        },
+        inline_keyboard: [[
+          { text: "✅ Ya, Beli Sekarang", callback_data: `confirm_${product.id}__${durationId}` },
+          { text: "❌ Batal",              callback_data: "cancel" },
+        ]],
       }
     );
     return;
   }
 
+  // ── Konfirmasi → cek email atau langsung bayar
   if (data.startsWith("confirm_")) {
-    const productId = data.replace("confirm_", "");
-    const product = products.find((p) => p.id === productId);
+    const parts      = data.replace("confirm_", "").split("__");
+    const productId  = parts[0];
+    const durationId = parts[1];
+    const product    = products.find((p) => p.id === productId);
+    const duration   = product?.durations.find((d) => d.id === durationId);
 
-    if (!product) {
-      await bot.sendMessage(chatId, "❌ Produk tidak ditemukan.");
+    if (!product || !duration) {
+      await bot.sendMessage(chatId, "❌ Pesanan tidak ditemukan.");
       return;
     }
 
-    userSessions[chatId] = { step: "waiting_payment", selectedProduct: productId };
-
-    await bot.sendMessage(
-      chatId,
-      `✅ *Pesanan Dikonfirmasi!*\n\n📦 ${product.name} — ${formatPrice(product.price)}\n\n${PAYMENT_INFO}\n\n📸 Setelah transfer, kirim *bukti pembayaran* (screenshot) ke chat ini.\n\n_Pesanan akan diproses dalam waktu 1x24 jam setelah pembayaran terkonfirmasi._`,
-      { parse_mode: "Markdown" }
-    );
-
-    const orderTime = new Date().toLocaleString("id-ID", { timeZone: "Asia/Jakarta" });
-    const adminMessage =
-      `🔔 *PESANAN BARU!*\n\n` +
-      `👤 Nama: ${name}\n` +
-      `🆔 User ID: ${query.from.id}\n` +
-      `📦 Produk: ${product.name}\n` +
-      `💰 Harga: ${formatPrice(product.price)}\n` +
-      `⏰ Waktu: ${orderTime}\n\n` +
-      `_Buyer sudah menerima instruksi pembayaran._`;
-
+    // Edit bubble → hilangkan tombol
     try {
-      await bot.sendMessage(ADMIN_ID!, adminMessage, { parse_mode: "Markdown" });
-      logger.info({ productId, buyerId: query.from.id }, "Order notification sent to admin");
-    } catch (err) {
-      logger.error({ err }, "Failed to send admin notification");
+      await bot.editMessageText(
+        `✅ *Pesanan Dikonfirmasi!*\n\n` +
+        `📦 ${product.name} — ${duration.label}\n` +
+        `💰 Total: *${formatPrice(duration.price)}*`,
+        {
+          chat_id:    chatId,
+          message_id: query.message!.message_id,
+          parse_mode: "Markdown",
+        }
+      );
+    } catch { /* abaikan */ }
+
+    // Perlu email?
+    if (product.requireEmail) {
+      userSessions[chatId] = {
+        step: "waiting_email",
+        selectedProduct:  productId,
+        selectedDuration: durationId,
+      };
+      await bot.sendMessage(
+        chatId,
+        `📧 *Masukkan Email Kamu*\n\n` +
+        `Produk *${product.name}* menggunakan sistem invite.\n\n` +
+        `Silakan ketik *email Google* kamu:\n` +
+        `_(Contoh: namakamu@gmail.com)_`,
+        { parse_mode: "Markdown" }
+      );
+      return;
     }
 
+    // Langsung bayar
+    await processPayment(chatId, productId, durationId, name, query.from.id);
     return;
   }
 });
 
-bot.on("photo", async (msg) => {
-  const chatId = msg.chat.id;
+// ═══════════════════════════════════════════════════════════
+//  PESAN TEKS (tangkap email buyer)
+// ═══════════════════════════════════════════════════════════
+bot.on("message", async (msg) => {
+  if (!msg.text || msg.text.startsWith("/")) return;
+
+  const chatId  = msg.chat.id;
   const session = userSessions[chatId];
 
-  if (!session || session.step !== "waiting_payment") {
+  if (!session || session.step !== "waiting_email") return;
+
+  const email = msg.text.trim();
+
+  if (!isValidEmail(email)) {
     await bot.sendMessage(
       chatId,
-      "ℹ️ Ketik /start untuk memulai atau /produk untuk melihat daftar produk.",
+      `❌ *Format email tidak valid!*\n\nContoh yang benar: namakamu@gmail.com\n\nSilakan kirim ulang email kamu:`,
+      { parse_mode: "Markdown" }
     );
     return;
   }
 
-  const product = session.selectedProduct
-    ? products.find((p) => p.id === session.selectedProduct)
-    : null;
+  await bot.sendMessage(
+    chatId,
+    `✅ Email *${email}* berhasil dicatat!\n\n_Memproses pesanan kamu..._`,
+    { parse_mode: "Markdown" }
+  );
 
-  const name = msg.from?.first_name || "Pembeli";
+  await processPayment(
+    chatId,
+    session.selectedProduct!,
+    session.selectedDuration!,
+    msg.from?.first_name || "Pembeli",
+    msg.from!.id,
+    email
+  );
+});
+
+// ═══════════════════════════════════════════════════════════
+//  TERIMA BUKTI BAYAR (foto)
+// ═══════════════════════════════════════════════════════════
+bot.on("photo", async (msg) => {
+  const chatId  = msg.chat.id;
+  const session = userSessions[chatId];
+
+  if (!session || session.step !== "waiting_payment") {
+    await bot.sendMessage(chatId, "ℹ️ Ketik /start untuk memulai atau pilih produk terlebih dahulu.");
+    return;
+  }
+
+  const product  = session.selectedProduct
+    ? products.find((p) => p.id === session.selectedProduct) : null;
+  const duration = product && session.selectedDuration
+    ? product.durations.find((d) => d.id === session.selectedDuration) : null;
+
+  const name      = msg.from?.first_name || "Pembeli";
   const orderTime = new Date().toLocaleString("id-ID", { timeZone: "Asia/Jakarta" });
 
   const adminCaption =
     `📸 *BUKTI PEMBAYARAN DITERIMA*\n\n` +
     `👤 Nama: ${name}\n` +
-    `🆔 User ID: ${msg.from?.id}\n` +
-    `📦 Produk: ${product ? product.name : "Tidak diketahui"}\n` +
-    `💰 Harga: ${product ? formatPrice(product.price) : "-"}\n` +
+    `🆔 User ID: \`${msg.from?.id}\`\n` +
+    `📦 Produk: ${product  ? product.name             : "Tidak diketahui"}\n` +
+    `⏳ Durasi: ${duration ? duration.label            : "-"}\n` +
+    `💰 Harga: ${duration  ? formatPrice(duration.price) : "-"}\n` +
+    (session.buyerEmail ? `📧 Email: ${session.buyerEmail}\n` : "") +
     `⏰ Waktu: ${orderTime}\n\n` +
-    `_Harap verifikasi dan proses pesanan ini._`;
+    `_Gunakan tombol di bawah untuk memproses pesanan._`;
 
   try {
     const fileId = msg.photo![msg.photo!.length - 1].file_id;
+
+    // Forward bukti ke admin + tombol aksi
     await bot.sendPhoto(ADMIN_ID!, fileId, {
-      caption: adminCaption,
-      parse_mode: "Markdown",
+      caption:      adminCaption,
+      parse_mode:   "Markdown",
+      reply_markup: getAdminActionKeyboard(msg.from!.id),
     });
 
     userSessions[chatId] = { step: "done" };
 
     await bot.sendMessage(
       chatId,
-      `✅ *Bukti pembayaran berhasil dikirim!*\n\nAdmin akan memverifikasi pembayaran kamu dan memproses pesanan dalam waktu singkat.\n\nTerima kasih telah berbelanja! 🎉\n\nKetik /start untuk kembali ke menu utama.`,
+      `✅ *Bukti pembayaran berhasil dikirim!*\n\nAdmin akan memverifikasi dan memproses pesanan kamu dalam waktu singkat.\n\nTerima kasih telah berbelanja! 🎉\n\nKetik /start untuk kembali ke menu utama.`,
       { parse_mode: "Markdown" }
-    );
+      );
 
     logger.info({ buyerId: msg.from?.id, productId: session.selectedProduct }, "Payment proof received");
   } catch (err) {
@@ -240,8 +628,14 @@ bot.on("photo", async (msg) => {
   }
 });
 
+// ─── Polling Error ─────────────────────────────────────────
 bot.on("polling_error", (err) => {
-  logger.error({ err }, "Telegram polling error");
+  logger.error({ err: String(err) }, "Telegram polling error");
+});
+
+// ─── Prevent unhandled rejections from crashing the process ─
+process.on("unhandledRejection", (reason) => {
+  logger.error({ reason: String(reason) }, "Unhandled promise rejection (bot)");
 });
 
 logger.info("Telegram bot started");
