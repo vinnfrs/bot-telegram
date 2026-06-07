@@ -10,7 +10,8 @@ export interface Product {
   name: string;
   description: string;
   category: string;
-  requireEmail: boolean; // true = bot minta email dari buyer
+  requireEmail: boolean;
+  inStock: boolean; // true = ada stok, false = habis
   durations: Duration[];
 }
 
@@ -24,7 +25,8 @@ export const products: Product[] = [
     name: "Canva Pro",
     description: "Akun dari Buyer — Sistem invite lewat email",
     category: "editing",
-    requireEmail: true, // ← butuh email buyer
+    requireEmail: true,
+    inStock: true,
     durations: [
       { id: "canva_1m",       label: "1 Bulan",            days: 30,   price: 2000  },
       { id: "canva_1m_admin", label: "1 Bulan (Admin)",    days: 30,   price: 10000 },
@@ -42,6 +44,7 @@ export const products: Product[] = [
     description: "Akun dari Seller",
     category: "editing",
     requireEmail: false,
+    inStock: true,
     durations: [
       { id: "alight_1y_private", label: "1 Tahun Private", days: 365, price: 10000 },
       { id: "alight_1y_sharing", label: "1 Tahun Sharing", days: 365, price: 7000  },
@@ -53,6 +56,7 @@ export const products: Product[] = [
     description: "Akun dari Seller — Laptop wajib beli Private",
     category: "editing",
     requireEmail: false,
+    inStock: true,
     durations: [
       { id: "capcut_1m_sharing",  label: "1 Bulan (Sharing)",  days: 30,  price: 10000 },
       { id: "capcut_2m_sharing",  label: "2 Bulan (Sharing)",  days: 60,  price: 18000 },
@@ -67,6 +71,7 @@ export const products: Product[] = [
     description: "Akun dari Seller",
     category: "editing",
     requireEmail: false,
+    inStock: true,
     durations: [
       { id: "picsart_1m_sharing", label: "1 Bulan (Sharing)", days: 30, price: 10000 },
       { id: "picsart_1m_private", label: "1 Bulan (Private)", days: 30, price: 15000 },
@@ -81,7 +86,8 @@ export const products: Product[] = [
     name: "YouTube Premium",
     description: "Akun Famplan/Indplan dari Seller — Max 2 Bulan per akun",
     category: "streaming",
-    requireEmail: true, // ← famplan butuh email buyer
+    requireEmail: true,
+    inStock: true,
     durations: [
       { id: "yt_fam_1m",  label: "1 Bulan (Famplan Head)", days: 30,  price: 10000 },
       { id: "yt_fam_1mb", label: "1 Bulan (Famplan)",      days: 30,  price: 5000  },
@@ -99,6 +105,7 @@ export const products: Product[] = [
     description: "Akun dari Seller — Khusus Private: Beli min 1 Bulan",
     category: "streaming",
     requireEmail: false,
+    inStock: true,
     durations: [
       { id: "bstation_1m_sharing", label: "1 Bulan (Sharing)",  days: 30,  price: 10000 },
       { id: "bstation_3m_sharing", label: "3 Bulan (Sharing)",  days: 90,  price: 15000 },
@@ -113,6 +120,7 @@ export const products: Product[] = [
     description: "Akun Sharing — Login 2 Device — Disarankan untuk HP",
     category: "streaming",
     requireEmail: false,
+    inStock: true,
     durations: [
       { id: "netflix_1m", label: "1 Bulan", days: 30, price: 45000  },
       { id: "netflix_2m", label: "2 Bulan", days: 60, price: 85000  },
@@ -125,6 +133,7 @@ export const products: Product[] = [
     description: "Akun dari Seller",
     category: "streaming",
     requireEmail: false,
+    inStock: true,
     durations: [
       { id: "wetv_1m_sharing",   label: "1 Bulan (Sharing)",    days: 30, price: 12000 },
       { id: "wetv_1m_antilimit", label: "1 Bulan (Anti Limit)", days: 30, price: 17000 },
@@ -138,6 +147,7 @@ export const products: Product[] = [
     description: "Akun Seller — Akun Platinum tersedia",
     category: "streaming",
     requireEmail: false,
+    inStock: true,
     durations: [
       { id: "vidio_1m_mobile",  label: "1 Bulan Mobile Only (Sharing)", days: 30, price: 15000 },
       { id: "vidio_1m_alldev",  label: "1 Bulan All Device (Private)",  days: 30, price: 38000 },
@@ -151,6 +161,7 @@ export const products: Product[] = [
     description: "Akun dari Seller",
     category: "streaming",
     requireEmail: false,
+    inStock: true,
     durations: [
       { id: "amazon_1m", label: "1 Bulan", days: 30, price: 15000 },
     ],
@@ -165,6 +176,7 @@ export const products: Product[] = [
     description: "Akun dari Seller — Durasi 1-3 Bulan tergantung stok pusat",
     category: "music",
     requireEmail: false,
+    inStock: true,
     durations: [
       { id: "spotify_1_3m", label: "1-3 Bulan", days: 90, price: 20000 },
     ],
@@ -174,7 +186,8 @@ export const products: Product[] = [
     name: "YouTube Music Premium",
     description: "Sudah termasuk saat beli YouTube Premium Famplan",
     category: "music",
-    requireEmail: true, // ← famplan butuh email buyer
+    requireEmail: true,
+    inStock: true,
     durations: [
       { id: "ytmusic_1m", label: "1 Bulan (Famplan)",  days: 30,  price: 5000  },
       { id: "ytmusic_3m", label: "3 Bulan (Famplan)",  days: 90,  price: 12000 },
@@ -191,6 +204,7 @@ export const products: Product[] = [
     description: "Akun dari Seller — Bisnis bisa invite akun lain",
     category: "tools",
     requireEmail: false,
+    inStock: true,
     durations: [
       { id: "chatgpt_1w_sharing", label: "1 Minggu (Sharing)",       days: 7,  price: 12000 },
       { id: "chatgpt_1m_sharing", label: "1 Bulan (Sharing)",        days: 30, price: 18000 },
@@ -204,6 +218,7 @@ export const products: Product[] = [
     description: "Akun dari Seller",
     category: "tools",
     requireEmail: false,
+    inStock: true,
     durations: [
       { id: "gemini_1y_sharing", label: "1 Tahun (Sharing)", days: 365, price: 21000 },
       { id: "gemini_1m_private", label: "1 Bulan (Private)", days: 30,  price: 15000 },
@@ -215,6 +230,7 @@ export const products: Product[] = [
     description: "Akun Sharing dari Seller",
     category: "tools",
     requireEmail: false,
+    inStock: true,
     durations: [
       { id: "ibis_1m", label: "1 Bulan", days: 30,  price: 10000 },
       { id: "ibis_1y", label: "1 Tahun", days: 365, price: 15000 },
@@ -226,6 +242,7 @@ export const products: Product[] = [
     description: "Akun dari Seller",
     category: "tools",
     requireEmail: false,
+    inStock: true,
     durations: [
       { id: "scribd_1m_sharing", label: "1 Bulan (Sharing)", days: 30, price: 15000 },
       { id: "scribd_2m_sharing", label: "2 Bulan (Sharing)", days: 60, price: 20000 },
@@ -239,6 +256,7 @@ export const products: Product[] = [
     description: "Akun dari Seller",
     category: "tools",
     requireEmail: false,
+    inStock: true,
     durations: [
       { id: "cursor_1w", label: "1 Minggu", days: 7, price: 10000 },
     ],
@@ -249,6 +267,7 @@ export const products: Product[] = [
     description: "Akun dari Seller",
     category: "tools",
     requireEmail: false,
+    inStock: true,
     durations: [
       { id: "surfshark_1w", label: "1 Minggu", days: 7, price: 10000 },
     ],
@@ -259,6 +278,7 @@ export const products: Product[] = [
     description: "Akun Private dari Seller",
     category: "tools",
     requireEmail: false,
+    inStock: true,
     durations: [
       { id: "zoom_7d",  label: "7 Hari",  days: 7,  price: 8000  },
       { id: "zoom_14d", label: "14 Hari", days: 14, price: 10000 },

@@ -12,6 +12,16 @@ const bot = new TelegramBot(TOKEN, { polling: true });
 
 const QRIS_FILE_ID = "AgACAgUAAxkBAAFLf15qIXBSF8mrV09qcFv0ZSxQM-CJmQACHBBrG47xCVXRQzRwiF7kjwEAAwIAA3MAAzsE";
 
+// ─── Stok override per DURASI ──────────────────────────────
+// key = duration id (misal "netflix_1m"), value = true/false
+// Jika tidak ada di sini, default = ada stok (true)
+const stockOverride: Record<string, boolean> = {};
+
+function isDurationInStock(durationId: string): boolean {
+  if (durationId in stockOverride) return stockOverride[durationId];
+  return true; // default: ada stok
+}
+
 // ─── Session buyer ─────────────────────────────────────────
 const userSessions: Record<number, {
   step: string;
@@ -20,8 +30,7 @@ const userSessions: Record<number, {
   buyerEmail?: string;
 }> = {};
 
-// ─── Simpan data order (untuk admin kirim akun) ────────────
-// key = buyerId, value = info order terakhir
+// ─── Data order (untuk kirim akun/invoice) ─────────────────
 const orderData: Record<number, {
   buyerName: string;
   productName: string;
@@ -42,8 +51,8 @@ const categories: { id: string; label: string; emoji: string }[] = [
 function getMainKeyboard() {
   return {
     inline_keyboard: [
-      [{ text: "🛍️ Lihat Produk",  callback_data: "show_products"  }],
-      [{ text: "📞 Hubungi Admin", callback_data: "contact_admin" }],
+      [{ text: "🛍️ Lihat Produk",  callback_data: "show_products" }],
+      [{ text: "📞 Hubungi Admin", url: "https://t.me/vinnfrs" }],
     ],
   };
 }
@@ -63,25 +72,29 @@ function getCategoryKeyboard() {
 
 function getProductKeyboard(categoryId: string) {
   const filtered = products.filter((p) => p.category === categoryId);
-  const keyboard = filtered.map((p) => [
-    { text: p.name, callback_data: `buy_${p.id}` },
-  ]);
+  const keyboard = filtered.map((p) => [{
+    text: p.name,
+    callback_data: `buy_${p.id}`,
+  }]);
   keyboard.push([{ text: "🔙 Kembali ke Kategori", callback_data: "show_products" }]);
   return { inline_keyboard: keyboard };
 }
 
 function getDurationKeyboard(product: Product) {
-  const keyboard = product.durations.map((d) => [
-    {
-      text: `⏳ ${d.label} — ${formatPrice(d.price)}`,
-      callback_data: `dur_${d.id}`,
-    },
-  ]);
+  const keyboard = product.durations.map((d) => {
+    const inStock = isDurationInStock(d.id);
+    return [{
+      // Kalau habis, tampil label HABIS + tidak bisa diklik (outofstock_)
+      text: inStock
+        ? `⏳ ${d.label} — ${formatPrice(d.price)}`
+        : `❌ ${d.label} — HABIS`,
+      callback_data: inStock ? `dur_${d.id}` : `durhabis_${d.id}`,
+    }];
+  });
   keyboard.push([{ text: "🔙 Kembali", callback_data: `cat_${product.category}` }]);
   return { inline_keyboard: keyboard };
 }
 
-// Keyboard tombol di notif admin
 function getAdminActionKeyboard(buyerId: number) {
   return {
     inline_keyboard: [
@@ -89,9 +102,7 @@ function getAdminActionKeyboard(buyerId: number) {
         { text: "✅ Kirim Akun",    callback_data: `send_account_${buyerId}` },
         { text: "🧾 Kirim Invoice", callback_data: `send_invoice_${buyerId}` },
       ],
-      [
-        { text: "💬 Buka Chat Buyer", url: `tg://user?id=${buyerId}` },
-      ],
+      [{ text: "💬 Buka Chat Buyer", url: `tg://user?id=${buyerId}` }],
     ],
   };
 }
@@ -148,7 +159,6 @@ async function processPayment(
     buyerEmail,
   };
 
-  // Simpan data order untuk admin
   orderData[buyerId] = {
     buyerName,
     productName:   product.name,
@@ -166,6 +176,7 @@ async function processPayment(
     `🏦 *Metode Pembayaran:*\n\n` +
     `• Seabank: 901643865481 (a/n Kevin F.R)\n` +
     `• GoPay / Dana / ShopeePay: 0895385164021\n` +
+    `• QRIS (scan di bawah)\n\n` +
     emailInfo,
     { parse_mode: "Markdown" }
   );
@@ -178,7 +189,6 @@ async function processPayment(
     parse_mode: "Markdown",
   });
 
-  // Notif ke admin + tombol aksi
   const orderTime    = new Date().toLocaleString("id-ID", { timeZone: "Asia/Jakarta" });
   const adminMessage =
     `🔔 *PESANAN BARU!*\n\n` +
@@ -202,7 +212,10 @@ async function processPayment(
   }
 }
 
-// ─── /start ────────────────────────────────────────────────
+// ═══════════════════════════════════════════════════════════
+//  PERINTAH BUYER
+// ═══════════════════════════════════════════════════════════
+
 bot.onText(/\/start/, async (msg) => {
   const chatId = msg.chat.id;
   const name   = msg.from?.first_name || "Kawan";
@@ -210,13 +223,12 @@ bot.onText(/\/start/, async (msg) => {
 
   await bot.sendMessage(
     chatId,
-    `👋 Halo *${name}*!\n\nSelamat datang di *Toko Aplikasi Premium* 🎉\n\nKami menyediakan berbagai aplikasi premium dengan harga terjangkau dan proses cepat!\n\nKetuk tombol di bawah untuk melihat produk kami:`,
+    `👋 Halo *${name}*!\n\nSelamat datang di *Vstore* 🎉\n\nKami menyediakan berbagai aplikasi premium dengan harga terjangkau dan proses cepat!\n\n/help untuk cara pemesanan\n/admin untuk menghubungi admin\n\nKetuk tombol di bawah untuk melihat produk kami:`,
     { parse_mode: "Markdown", reply_markup: getMainKeyboard() }
   );
 });
 
-// ─── /bantuan ──────────────────────────────────────────────
-bot.onText(/\/bantuan/, async (msg) => {
+bot.onText(/\/help/, async (msg) => {
   await bot.sendMessage(
     msg.chat.id,
     `📚 *Cara Pemesanan:*\n\n1️⃣ Ketik /start lalu pilih *Lihat Produk*\n2️⃣ Pilih kategori aplikasi\n3️⃣ Pilih produk yang kamu inginkan\n4️⃣ Pilih durasi langganan\n5️⃣ Konfirmasi pesanan\n6️⃣ Lakukan pembayaran\n7️⃣ Kirim bukti transfer\n8️⃣ Pesanan diproses oleh admin ✅\n\n❓ Pertanyaan? Hubungi admin dengan /admin`,
@@ -224,11 +236,10 @@ bot.onText(/\/bantuan/, async (msg) => {
   );
 });
 
-// ─── /admin ────────────────────────────────────────────────
 bot.onText(/\/admin/, async (msg) => {
   await bot.sendMessage(
     msg.chat.id,
-    `📞 *Hubungi Admin:*\n\nAdmin kami siap membantu kamu!\n👉 @username_admin\n\nJam operasional: 24 jam`,
+    `📞 *Hubungi Admin:*\n\nAdmin kami siap membantu kamu!\n👉 @vinnfrs\n\nJam operasional: 24 jam`,
     { parse_mode: "Markdown" }
   );
 });
@@ -237,10 +248,85 @@ bot.onText(/\/admin/, async (msg) => {
 //  PERINTAH ADMIN
 // ═══════════════════════════════════════════════════════════
 
-// ─── /kirim <user_id> <isi pesan> ──────────────────────────
-// Contoh: /kirim 123456789 Email: abc@gmail.com | Pass: 12345
+// /stok → lihat semua status stok per durasi
+bot.onText(/^\/stok(@\w+)?$/, async (msg) => {
+  if (String(msg.chat.id) !== ADMIN_ID) return;
+
+  const chatId = msg.chat.id;
+
+  // Kelompokkan per kategori, kirim per pesan agar tidak melebihi batas 4096 karakter
+  const grouped: Record<string, typeof products> = {};
+  for (const p of products) {
+    if (!grouped[p.category]) grouped[p.category] = [];
+    grouped[p.category].push(p);
+  }
+
+  const categoryLabel: Record<string, string> = {
+    streaming: "🎬 Streaming",
+    music:     "🎵 Music",
+    editing:   "🎨 Editing",
+    tools:     "🔧 Tools",
+  };
+
+  await bot.sendMessage(chatId, `📦 *Status Stok — semua produk:*\n_(dikirim per kategori)_`, { parse_mode: "Markdown" });
+
+  for (const [catId, catProducts] of Object.entries(grouped)) {
+    let text = `*${categoryLabel[catId] ?? catId}*\n\n`;
+    for (const p of catProducts) {
+      text += `▸ *${p.name}*\n`;
+      for (const d of p.durations) {
+        const status = isDurationInStock(d.id) ? "✅" : "❌";
+        text += `   ${status} \`${d.id}\` — ${d.label}\n`;
+      }
+      text += "\n";
+    }
+    await bot.sendMessage(chatId, text, { parse_mode: "Markdown" });
+  }
+
+  await bot.sendMessage(
+    chatId,
+    `_Ubah stok: /stok <id\\_durasi> on/off_\n_Contoh: /stok netflix\\_1m off_`,
+    { parse_mode: "Markdown" }
+  );
+});
+
+// /stok <duration_id> on/off → ubah stok per durasi
+bot.onText(/\/stok (\S+) (on|off)/, async (msg, match) => {
+  if (String(msg.chat.id) !== ADMIN_ID) return;
+
+  const durationId = match![1].toLowerCase();
+  const status     = match![2].toLowerCase();
+
+  // Cari produk & durasi yang cocok
+  const product  = products.find((p) => p.durations.some((d) => d.id === durationId));
+  const duration = product?.durations.find((d) => d.id === durationId);
+
+  if (!product || !duration) {
+    await bot.sendMessage(
+      msg.chat.id,
+      `❌ Duration ID *${durationId}* tidak ditemukan.\n\nKetik /stok untuk lihat semua ID durasi.`,
+      { parse_mode: "Markdown" }
+    );
+    return;
+  }
+
+  stockOverride[durationId] = status === "on";
+
+  await bot.sendMessage(
+    msg.chat.id,
+    `✅ Stok berhasil diubah!\n\n` +
+    `📦 Produk: *${product.name}*\n` +
+    `⏳ Durasi: *${duration.label}*\n` +
+    `Status: ${status === "on" ? "✅ Ada Stok" : "❌ Habis"}`,
+    { parse_mode: "Markdown" }
+  );
+
+  logger.info({ durationId, status }, "Duration stock updated by admin");
+});
+
+// /kirim <user_id> <isi pesan>
 bot.onText(/\/kirim (.+)/, async (msg, match) => {
-  if (String(msg.chat.id) !== ADMIN_ID) return; // hanya admin
+  if (String(msg.chat.id) !== ADMIN_ID) return;
 
   const args    = match![1].split(" ");
   const buyerId = parseInt(args[0]);
@@ -257,7 +343,7 @@ bot.onText(/\/kirim (.+)/, async (msg, match) => {
   try {
     await bot.sendMessage(
       buyerId,
-      `📦 *Pesanan Kamu Sudah Diproses!*\n\n${isi}\n\n_Terima kasih telah berbelanja di Vstorebot! 🎉_`,
+      `📦 *Pesanan Kamu Sudah Diproses!*\n\n${isi}\n\n_Terima kasih telah berbelanja di Vstore! 🎉_`,
       { parse_mode: "Markdown" }
     );
     await bot.sendMessage(msg.chat.id, `✅ Pesan berhasil dikirim ke buyer (ID: ${buyerId})`);
@@ -267,8 +353,7 @@ bot.onText(/\/kirim (.+)/, async (msg, match) => {
   }
 });
 
-// ─── /invoice <user_id> <detail akun> ─────────────────────
-// Contoh: /invoice 123456789 Email: abc@gmail.com | Pass: 12345
+// /invoice <user_id> <detail akun>
 bot.onText(/\/invoice (.+)/, async (msg, match) => {
   if (String(msg.chat.id) !== ADMIN_ID) return;
 
@@ -285,7 +370,7 @@ bot.onText(/\/invoice (.+)/, async (msg, match) => {
   const orderTime = new Date().toLocaleString("id-ID", { timeZone: "Asia/Jakarta" });
 
   const invoiceText =
-    `🧾 *INVOICE - Vstorebot*\n` +
+    `🧾 *INVOICE - Vstore*\n` +
     `━━━━━━━━━━━━━━━━━━\n\n` +
     `✅ *Pesanan Selesai Diproses!*\n\n` +
     `👤 Nama: ${order?.buyerName || "Buyer"}\n` +
@@ -308,22 +393,22 @@ bot.onText(/\/invoice (.+)/, async (msg, match) => {
   }
 });
 
-// ─── /help_admin ───────────────────────────────────────────
+// /help_admin
 bot.onText(/\/help_admin/, async (msg) => {
   if (String(msg.chat.id) !== ADMIN_ID) return;
 
   await bot.sendMessage(
     msg.chat.id,
     `🛠️ *Perintah Admin:*\n\n` +
-    `*Kirim akun ke buyer:*\n` +
-    `/kirim <user_id> <isi pesan>\n` +
-    `_Contoh:_\n` +
-    `/kirim 123456789 Email: abc@gmail.com Pass: 12345\n\n` +
-    `*Kirim invoice ke buyer:*\n` +
-    `/invoice <user_id> <detail akun>\n` +
-    `_Contoh:_\n` +
-    `/invoice 123456789 Email: abc@gmail.com Pass: 12345\n\n` +
-    `💡 User ID buyer ada di notifikasi pesanan.`,
+    `*Kelola Stok (per durasi):*\n` +
+    `/stok — lihat semua status stok\n` +
+    `/stok <duration\\_id> on — aktifkan stok\n` +
+    `/stok <duration\\_id> off — nonaktifkan stok\n` +
+    `_Contoh: /stok netflix\\_1m off_\n\n` +
+    `*Kirim ke Buyer:*\n` +
+    `/kirim <user\\_id> <isi pesan>\n` +
+    `/invoice <user\\_id> <detail akun>\n\n` +
+    `💡 Duration ID & User ID ada di notifikasi pesanan.`,
     { parse_mode: "Markdown" }
   );
 });
@@ -338,35 +423,43 @@ bot.on("callback_query", async (query) => {
   const data   = query.data || "";
   const name   = query.from.first_name || "Pembeli";
 
-  try { await bot.answerCallbackQuery(query.id); } catch { /* query expired, abaikan */ }
+  try { await bot.answerCallbackQuery(query.id); } catch { /* query expired */ }
 
-  // ── Admin: Kirim akun ke buyer (dari tombol notif)
+  // ── Durasi habis → popup notif
+  if (data.startsWith("durhabis_")) {
+    const durationId = data.replace("durhabis_", "");
+    const product    = products.find((p) => p.durations.some((d) => d.id === durationId));
+    const duration   = product?.durations.find((d) => d.id === durationId);
+
+    try {
+      await bot.answerCallbackQuery(query.id, {
+        text: `❌ Stok ${duration?.label || "durasi ini"} sedang habis!`,
+        show_alert: true,
+      });
+    } catch { /* abaikan */ }
+    // Tidak perlu ganti halaman, buyer tetap di halaman pilih durasi
+    return;
+  }
+
+  // ── Admin: tombol kirim akun
   if (data.startsWith("send_account_")) {
     if (String(chatId) !== ADMIN_ID) return;
     const buyerId = data.replace("send_account_", "");
     await bot.sendMessage(
       chatId,
-      `📤 *Kirim Akun ke Buyer*\n\n` +
-      `Gunakan perintah:\n` +
-      `/kirim ${buyerId} <isi akun>\n\n` +
-      `Contoh:\n` +
-      `/kirim ${buyerId} Email: abc@gmail.com\nPass: 12345`,
+      `📤 *Kirim Akun ke Buyer*\n\nGunakan perintah:\n/kirim ${buyerId} <isi akun>\n\nContoh:\n/kirim ${buyerId} Email: abc@gmail.com\nPass: 12345`,
       { parse_mode: "Markdown" }
     );
     return;
   }
 
-  // ── Admin: Kirim invoice ke buyer (dari tombol notif)
+  // ── Admin: tombol kirim invoice
   if (data.startsWith("send_invoice_")) {
     if (String(chatId) !== ADMIN_ID) return;
     const buyerId = data.replace("send_invoice_", "");
     await bot.sendMessage(
       chatId,
-      `🧾 *Kirim Invoice ke Buyer*\n\n` +
-      `Gunakan perintah:\n` +
-      `/invoice ${buyerId} <detail akun>\n\n` +
-      `Contoh:\n` +
-      `/invoice ${buyerId} Email: abc@gmail.com\nPass: 12345`,
+      `🧾 *Kirim Invoice ke Buyer*\n\nGunakan perintah:\n/invoice ${buyerId} <detail akun>\n\nContoh:\n/invoice ${buyerId} Email: abc@gmail.com\nPass: 12345`,
       { parse_mode: "Markdown" }
     );
     return;
@@ -393,7 +486,7 @@ bot.on("callback_query", async (query) => {
   // ── Hubungi admin
   if (data === "contact_admin") {
     await editOrSend(query,
-      `📞 *Hubungi Admin:*\n\nSilakan hubungi admin kami.\n👉 @username_admin\n\nJam operasional: 24 jam`,
+      `📞 *Hubungi Admin:*\n\nSilakan hubungi admin kami.\n👉 @vinnfrs\n\nJam operasional: 24 jam`,
       { inline_keyboard: [[{ text: "🔙 Kembali", callback_data: "back_main" }]] }
     );
     return;
@@ -430,7 +523,7 @@ bot.on("callback_query", async (query) => {
     return;
   }
 
-  // ── Pilih produk → durasi
+  // ── Pilih produk → tampilkan durasi
   if (data.startsWith("buy_")) {
     const productId = data.replace("buy_", "");
     const product   = products.find((p) => p.id === productId);
@@ -443,7 +536,7 @@ bot.on("callback_query", async (query) => {
     userSessions[chatId] = { step: "select_duration", selectedProduct: productId };
 
     await editOrSend(query,
-      `📦 *${product.name}*\n📝 ${product.description}\n\n⏳ *Pilih durasi langganan:*`,
+      `📦 *${product.name}*\n📝 ${product.description}\n\n⏳ *Pilih durasi langganan:*\n_❌ = stok habis_`,
       getDurationKeyboard(product)
     );
     return;
@@ -457,6 +550,17 @@ bot.on("callback_query", async (query) => {
 
     if (!product || !duration) {
       await bot.sendMessage(chatId, "❌ Durasi tidak ditemukan.");
+      return;
+    }
+
+    // Double-check stok saat klik
+    if (!isDurationInStock(durationId)) {
+      try {
+        await bot.answerCallbackQuery(query.id, {
+          text: `❌ Stok ${duration.label} baru saja habis!`,
+          show_alert: true,
+        });
+      } catch { /* abaikan */ }
       return;
     }
 
@@ -496,7 +600,6 @@ bot.on("callback_query", async (query) => {
       return;
     }
 
-    // Edit bubble → hilangkan tombol
     try {
       await bot.editMessageText(
         `✅ *Pesanan Dikonfirmasi!*\n\n` +
@@ -510,7 +613,6 @@ bot.on("callback_query", async (query) => {
       );
     } catch { /* abaikan */ }
 
-    // Perlu email?
     if (product.requireEmail) {
       userSessions[chatId] = {
         step: "waiting_email",
@@ -528,7 +630,6 @@ bot.on("callback_query", async (query) => {
       return;
     }
 
-    // Langsung bayar
     await processPayment(chatId, productId, durationId, name, query.from.id);
     return;
   }
@@ -596,8 +697,8 @@ bot.on("photo", async (msg) => {
     `📸 *BUKTI PEMBAYARAN DITERIMA*\n\n` +
     `👤 Nama: ${name}\n` +
     `🆔 User ID: \`${msg.from?.id}\`\n` +
-    `📦 Produk: ${product  ? product.name             : "Tidak diketahui"}\n` +
-    `⏳ Durasi: ${duration ? duration.label            : "-"}\n` +
+    `📦 Produk: ${product  ? product.name               : "Tidak diketahui"}\n` +
+    `⏳ Durasi: ${duration ? duration.label              : "-"}\n` +
     `💰 Harga: ${duration  ? formatPrice(duration.price) : "-"}\n` +
     (session.buyerEmail ? `📧 Email: ${session.buyerEmail}\n` : "") +
     `⏰ Waktu: ${orderTime}\n\n` +
@@ -606,7 +707,6 @@ bot.on("photo", async (msg) => {
   try {
     const fileId = msg.photo![msg.photo!.length - 1].file_id;
 
-    // Forward bukti ke admin + tombol aksi
     await bot.sendPhoto(ADMIN_ID!, fileId, {
       caption:      adminCaption,
       parse_mode:   "Markdown",
@@ -617,9 +717,9 @@ bot.on("photo", async (msg) => {
 
     await bot.sendMessage(
       chatId,
-      `✅ *Bukti pembayaran berhasil dikirim!*\n\nAdmin akan memverifikasi dan memproses pesanan kamu dalam waktu singkat.\n\nTerima kasih telah berbelanja! 🎉\n\nKetik /start untuk kembali ke menu utama.`,
+      `✅ *Bukti pembayaran berhasil dikirim!*\n\n⏳ *Pesananmu sedang diproses...*\n\nAdmin akan memverifikasi dan memproses pesanan kamu dalam waktu singkat.\n\nKetik /start untuk kembali ke menu utama.`,
       { parse_mode: "Markdown" }
-      );
+    );
 
     logger.info({ buyerId: msg.from?.id, productId: session.selectedProduct }, "Payment proof received");
   } catch (err) {
@@ -633,7 +733,6 @@ bot.on("polling_error", (err) => {
   logger.error({ err: String(err) }, "Telegram polling error");
 });
 
-// ─── Prevent unhandled rejections from crashing the process ─
 process.on("unhandledRejection", (reason) => {
   logger.error({ reason: String(reason) }, "Unhandled promise rejection (bot)");
 });
